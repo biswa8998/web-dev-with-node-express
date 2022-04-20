@@ -1,12 +1,53 @@
 const express = require('express');
-const fortune = require('./lib/fortune-cookie.js');
+
 const path = require('path');
 const bodyParser = require('body-parser');
-const formidable = require('formidable');
 
+const credentials = require('./credentials.js');
+const http = require('http');
+
+const route = require('./route/routes.js');
+
+// express application
 const app = express();
-
 app.disable('x-powered-by');
+
+// logging
+switch (app.get('env')) {
+  case 'production':
+    app.use(
+      require('express-logger')({
+        path: path.join(__dirname, 'log/request.log'),
+      })
+    );
+    break;
+  case 'development':
+    app.use(require('morgan')('dev'));
+    break;
+}
+
+// database setting
+const mongoose = require('mongoose');
+switch (app.get('env')) {
+  case 'production':
+    mongoose.connect(
+      credentials.mongo.production.connectionString,
+      function () {
+        console.log('Production database connected');
+      }
+    );
+    break;
+  case 'development':
+    mongoose.connect(
+      credentials.mongo.development.connectionString,
+      function () {
+        console.log('Development database connected');
+      }
+    );
+    break;
+  default:
+    throw new Error('Unknown execution environment: ' + app.get('env'));
+}
 
 // setup handlebars view engine
 const handlebars = require('express-handlebars').create({
@@ -25,6 +66,9 @@ app.set('view engine', 'handlebars');
 
 app.use(express.static(path.join(__dirname, '/public')));
 
+app.use(require('cookie-parser')(credentials.cookieSecret));
+app.use(require('express-session')());
+
 app.use(
   bodyParser.urlencoded({
     extended: true,
@@ -41,73 +85,22 @@ app.use(function (req, res, next) {
   next();
 });
 
-app.get('/', function (req, res) {
-  res.render('home');
+app.use(function (req, res, next) {
+  res.locals.flash = req.session.flash;
+  delete req.session.flash;
+  next();
 });
 
-app.get('/about', function (req, res) {
-  res.render('about', {
-    fortune: fortune.fortuneCookie(),
-    pageTestScript: '/qa/tests-about.js',
-  });
-});
-
-app.get('/tours/hood-river', function (req, res) {
-  res.render('tours/hood-river');
-});
-
-app.get('/tours/request-group-rate', function (req, res) {
-  res.render('tours/request-group-rate');
-});
-
-app.get('/headers', function (req, res) {
-  res.type('text/plain');
-  let s = '';
-  for (const name in req.headers) {
-    s += name + ':' + req.headers[name] + '\n';
+app.use(function (req, res, next) {
+  const cluster = require('cluster');
+  if (cluster.isWorker) {
+    console.log(`Worker id ${cluster.worker.id} received request`);
   }
-
-  res.send(s);
+  next();
 });
 
-app.get('/newsletter', function (req, res) {
-  res.render('newsletter', { csrf: 'CSRF token goes here' });
-});
-
-app.post('/process', function (req, res) {
-  if (req.xhr || req.accepts('json', 'html') === 'json') {
-    res.json({ success: true });
-  } else {
-    res.redirect(303, '/thank-you');
-  }
-});
-
-app.get('/thank-you', function (req, res) {
-  res.render('thankyou');
-});
-
-app.get('/contests/vacation-photo', function (req, res) {
-  const now = new Date();
-  res.render('contests/vacation-photo', {
-    year: now.getFullYear(),
-    month: now.getMonth(),
-  });
-});
-
-app.post('/contests/vacation-photo/:year/:month', function (req, res) {
-  const form = new formidable.IncomingForm();
-  form.parse(req, function (err, fields, files) {
-    if (err) {
-      return res.redirect(303, '/error');
-    }
-
-    console.log('received fields: ');
-    console.log(fields);
-    console.log('received files: ');
-    console.log(files);
-    res.redirect(303, '/thank-you');
-  });
-});
+// connecting with routes
+route(app);
 
 // custom 404 page
 app.use(function (req, res) {
@@ -122,10 +115,22 @@ app.use(function (err, req, res, next) {
   res.render('500');
 });
 
-app.listen(app.get('port'), function () {
-  console.log(
-    'Server started on http://localhost:' +
-      app.get('port') +
-      ', press Ctrl + C to terminate'
-  );
-});
+// eslint-disable-next-line space-before-function-paren
+function startServer() {
+  http.createServer(app).listen(app.get('port'), function () {
+    console.log(
+      `Mode: ${app.get('env')} || Started server http://localhost:${app.get(
+        'port'
+      )}. Press Ctrl + C to stop...`
+    );
+  });
+}
+
+if (require.main === module) {
+  // application run directly; start app server
+  startServer();
+} else {
+  module.exports = startServer;
+}
+
+// app.listen(app.get('port'), function () {});
